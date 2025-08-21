@@ -1,7 +1,10 @@
-use std::path::Path;
-
 use std::fs;
+use std::path::Path;
+use std::path::PathBuf;
+
+use regex::Regex;
 use toml_edit::{Array, DocumentMut, Formatted, Value};
+use walkdir::{DirEntry, WalkDir};
 
 use crate::{Config, config::ConfigLoadError};
 
@@ -65,6 +68,60 @@ fn get_mut_array(doc: &mut DocumentMut) -> &mut Array {
         last.decor_mut().set_suffix("");
     }
     deps
+}
+
+fn is_hidden(entry: &DirEntry) -> bool {
+    entry
+        .file_name()
+        .to_str()
+        .map(|s| s.starts_with(".") && s.len() > 1)
+        .unwrap_or(false)
+}
+
+pub fn scan_r_files_for_packages(dir: &PathBuf) -> Result<Vec<String>, std::io::Error> {
+    let mut packages = Vec::new();
+    let re = Regex::new(r#"(?:library|require)\(\s*["']?([A-Za-z0-9_.]+)["']?\s*\)"#).unwrap();
+
+    const EXCLUDED: [&str; 1] = ["rv"];
+
+    for entry in WalkDir::new(dir)
+        .into_iter()
+        .filter_entry(|e| !is_hidden(e))
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let path = e.path();
+            // Exclude if any ancestor folder or the file itself matches an excluded name
+            !path.ancestors().any(|ancestor| {
+                ancestor
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| EXCLUDED.contains(&n))
+            })
+        })
+    {
+        if entry.file_type().is_file()
+            && entry
+                .path()
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("R"))
+        {
+            let content = std::fs::read_to_string(entry.path())?;
+            for line in content.lines() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with('#') {
+                    continue;
+                }
+                for cap in re.captures_iter(line) {
+                    if let Some(pkg) = cap.get(1) {
+                        packages.push(pkg.as_str().to_string());
+                    }
+                }
+            }
+        }
+    }
+    packages.sort();
+    packages.dedup();
+    Ok(packages)
 }
 
 #[derive(Debug, thiserror::Error)]

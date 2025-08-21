@@ -15,7 +15,7 @@ use rv::system_req::{SysDep, SysInstallationStatus};
 use rv::{
     CacheInfo, Config, ProjectSummary, RCmd, RCommandLine, RepositoryAction, RepositoryMatcher,
     RepositoryPositioning, RepositoryUpdates, Version, activate, add_packages, deactivate,
-    execute_repository_action, read_and_verify_config, system_req,
+    execute_repository_action, read_and_verify_config, scan_r_files_for_packages, system_req,
 };
 
 #[derive(Parser)]
@@ -78,6 +78,9 @@ pub enum Command {
         #[clap(long)]
         /// Add packages to config file, but do not sync. No effect if --dry-run is used
         no_sync: bool,
+        #[clap(long)]
+        /// Scan R files in the directory for library() calls and add them to the project
+        scan: bool,
     },
     /// Upgrade packages to the latest versions available
     Upgrade {
@@ -423,10 +426,27 @@ fn try_main() -> Result<()> {
             packages,
             dry_run,
             no_sync,
+            scan,
         } => {
             // load config to verify structure is valid
             let mut doc = read_and_verify_config(&cli.config_file)?;
-            add_packages(&mut doc, packages)?;
+
+            // If scan is enabled, scan for library() calls and add to packages
+            if scan {
+                let project_dir = packages
+                    .get(0)
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("."));
+
+                let mut scanned = scan_r_files_for_packages(&project_dir)?;
+                scanned.sort();
+                scanned.dedup();
+
+                add_packages(&mut doc, scanned)?;
+            } else {
+                add_packages(&mut doc, packages)?;
+            }
+
             // write the update if not dry run
             if !dry_run {
                 write(&cli.config_file, doc.to_string())?;
